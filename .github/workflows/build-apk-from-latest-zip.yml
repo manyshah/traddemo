@@ -1,0 +1,88 @@
+name: Build Flutter APK from latest ZIP
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "*.zip"
+      - ".github/workflows/build-apk-from-latest-zip.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    name: Build APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find latest source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP_FILE="$(find . -maxdepth 1 -type f -name '*.zip' -printf '%T@ %p\n' | sort -nr | head -n 1 | cut -d' ' -f2-)"
+          if [ -z "$ZIP_FILE" ]; then
+            echo "No ZIP file found in repository root. Upload the source ZIP to the root of the repo."
+            exit 1
+          fi
+          echo "ZIP_FILE=${ZIP_FILE#./}" >> "$GITHUB_ENV"
+          echo "Selected ZIP: ${ZIP_FILE#./}"
+
+      - name: Extract source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf extracted_source build_app
+          mkdir -p extracted_source
+          unzip -q "$ZIP_FILE" -d extracted_source
+          PUBSPEC_FILE="$(find extracted_source -name pubspec.yaml -not -path '*/build/*' | head -n 1)"
+          if [ -z "$PUBSPEC_FILE" ]; then
+            echo "pubspec.yaml not found inside ZIP."
+            find extracted_source -maxdepth 4 -type f | sort
+            exit 1
+          fi
+          SOURCE_DIR="$(dirname "$PUBSPEC_FILE")"
+          echo "SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
+          echo "Source directory: $SOURCE_DIR"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Create Android scaffold and copy ZIP source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter --version
+          flutter create --platforms=android --org com.demoacademy --project-name trade_demo_academy build_app
+          rsync -a --exclude='.git' "$SOURCE_DIR"/ build_app/
+          cd build_app
+          flutter pub get
+
+      - name: Build release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd build_app
+          flutter build apk --release --no-shrink --build-name=1.0.0 --build-number=1
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trade-demo-academy-v1-apk
+          path: build_app/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
